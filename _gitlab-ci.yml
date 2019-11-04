@@ -1,0 +1,116 @@
+before_script:
+  - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN registry-docker.jinn.vn:443
+  - export GOPATH=$(pwd)
+stages:
+  - test
+  - preview
+  - build
+  - deploy
+  - backup-production
+cache:
+    untracked: true
+test:
+ stage: test
+ script:
+   - cd src/server
+   - glide install
+  #  - docker-compose up -d
+   - export PATH=$PATH:/root/go/bin
+   -  /root/go/bin/gocov test $(go list ./... | grep -v /vendor/) | /root/go/bin/gocov-xml > coverage.xml
+   -  go test -v $(go list ./... | grep -v /vendor/) | /root/go/bin/go-junit-report > test.xml
+   - cd ../..
+ artifacts:
+      paths:
+      # - src/server/report.xml
+      - src/server/coverage.xml
+      - src/server/test.xml
+      expire_in: 1 week
+ tags:
+   - build-docker
+sonarqube_preview:
+  script:
+    - sudo /root/sonar-runner-2.4/bin/sonar-runner
+    - sudo rm -Rf .sonar
+#    - git checkout origin/master
+#    - git merge $CI_BUILD_REF --no-commit --no-ff
+#    - mvn --batch-mode verify sonar:sonar -Dsonar.host.url=$SONAR_URL -Dsonar.analysis.mode=preview -Dsonar.gitlab.project_id=$CI_PROJECT_PATH -Dsonar.gitlab.commit_sha=$CI_BUILD_REF -Dsonar.gitlab.ref_name=$CI_BUILD_REF_NAME
+  stage: preview
+  dependencies:
+    - test
+  only:
+    - master
+  tags:
+    - build-docker
+
+build-builder:
+  stage: build
+  script:
+    - docker build -t registry-docker.jinn.vn:443/jinnvn/jinn-api-image-processing:builder docker-alpine-go-vips
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN registry-docker.jinn.vn:443
+    - docker push registry-docker.jinn.vn:443/jinnvn/jinn-api-image-processing:builder
+  only:
+    - master
+  when: manual
+  environment:
+      name: production
+  tags:
+    - build-docker
+build-stagging:
+  stage: build
+  script:
+    # - export GOPATH=$(pwd)
+    # - cd src/server
+    # - glide update
+    # - cd ../..
+    - docker build -t registry-docker.jinn.vn:443/jinnvn/jinn-api-image-processing:stagging-$CI_COMMIT_SHA .
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN registry-docker.jinn.vn:443
+    - docker push registry-docker.jinn.vn:443/jinnvn/jinn-api-image-processing:stagging-$CI_COMMIT_SHA
+  only:
+    - master
+  environment:
+      name: stagging
+  tags:
+    - build-docker
+deploy-stagging:
+  stage: deploy
+  script:
+    - docker login -u phavo -p $ACCESS_TOKEN registry-docker.jinn.vn:443
+    - docker service update --force --with-registry-auth --image registry-docker.jinn.vn:443/jinnvn/jinn-api-image-processing:stagging-$CI_COMMIT_SHA jinn-test_file-api
+  only:
+    - master
+  variables:
+        GIT_STRATEGY: none
+  environment:
+      name: stagging
+  tags:
+    - update-docker-service
+build-production:
+  stage: build
+  script:
+    # - export GOPATH=$(pwd)
+    # - cd src/server
+    # - glide update
+    # - cd ../..
+    - docker build -t registry-docker.jinn.vn:443/jinnvn/jinn-api-image-processing:$CI_COMMIT_SHA .
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN registry-docker.jinn.vn:443
+    - docker push registry-docker.jinn.vn:443/jinnvn/jinn-api-image-processing:$CI_COMMIT_SHA
+  only:
+    - master
+  environment:
+        name: production
+  tags:
+    - build-docker
+deploy-production:
+  stage: deploy
+  script:
+    - docker login -u phavo -p $ACCESS_TOKEN registry-docker.jinn.vn:443
+    - docker service update --force --with-registry-auth --image registry-docker.jinn.vn:443/jinnvn/jinn-api-image-processing:$CI_COMMIT_SHA jinn_file-api
+  only:
+    - master
+  when: manual
+  variables:
+        GIT_STRATEGY: none
+  environment:
+          name: production
+  tags:
+    - jinn-production
